@@ -1,0 +1,126 @@
+## APP V1, Rev 1
+
+global = function(){   
+  
+  library(dplyr) # data wrangling
+  library(readr) # reading data
+  library(ggplot2) # data vizualization
+  library(scales) # for rescaling values
+  library(shiny) # main shiny app package
+  library(RSQLite) #database connection
+  library(stringr) #string manipulation
+  library(lubridate) #date manipulation
+  
+  #load the data so it is available for ui and server
+  
+  rush_db = dbConnect(RSQLite::SQLite(), "data/bluebikes/bluebikes.sqlite")
+  tally_rush_data = dbReadTable(rush_db, "tally_rush")
+  dbDisconnect(rush_db)
+  
+  tally_rush_data$day = as.Date(tally_rush_data$day)  #convert "day" column into Date format
+  tally_rush_data$year = lubridate::year(tally_rush_data$day)  #Extract year into a new "year" column
+  tally_rush_data$day_of_year = yday(tally_rush_data$day) #extract day for plotting
+  
+  
+  #store the data in global environment
+  assign("tally_rush_data", tally_rush_data, envir = .GlobalEnv)
+  
+}
+
+ui = function(){
+  
+  # Load up the database
+  tally_rush_data = get("tally_rush_data", envir = .GlobalEnv)
+  
+  # Filter to get unique year from the year column
+  available_years = sort(unique(tally_rush_data$year))
+  
+  fluidPage(
+    title = "Boston Bike Riders",
+    sidebarLayout( # Use sidebar Layout for a common dashboard layout
+      sidebarPanel(
+        # Input for Year Selection
+        selectInput(inputId = "selected_year",
+                    label = "Select Year:",
+                    choices = available_years,
+                    selected = available_years[1]), # Select the first available year by default
+        
+        # Input for AM/PM Selection
+        radioButtons(inputId = "rush_period",
+                     label = "Select Rush Period:",
+                     choices = c("AM" = "am", "PM" = "pm"), # Map display names to data values
+                     selected = "am"), # Select AM by default
+        
+        # Input for Graph Type (Line or Bar)
+        radioButtons(inputId = "graph_type",
+                     label = "Select Graph Type:",
+                     choices = c("Line Plot" = "line", "Bar Plot" = "bar"),
+                     selected = "line") # Select Line Plot by default
+        
+        
+      ),
+      mainPanel(
+        # Output for the generated plot
+        plotOutput(outputId = "rider_count_plot")
+      )
+    )
+  )
+}
+
+server = function(input, output, session){
+  
+  # Access the data loaded in the global function
+  tally_rush_data = get("tally_rush_data", envir = .GlobalEnv)
+  
+  # Reactive expression to filter data based on user inputs
+  filtered_data = reactive({
+    data = tally_rush_data %>%
+      filter(year == as.integer(input$selected_year)) %>% # Filter by selected year (ensure types match)
+      filter(rush == input$rush_period) %>% # Filter by selected rush period (am/pm)
+      # Arrange by the 'day' column (which is now a Date) for correct plotting order
+      arrange(day)
+    
+    return(data)
+  })
+  
+  # Render the plot based on filtered data and selected graph type
+  output$rider_count_plot = renderPlot({
+    
+    data_to_plot = filtered_data()
+    
+    # Check if data is available to plot
+    if (is.null(data_to_plot) || nrow(data_to_plot) == 0) {
+      return(ggplot() + annotate("text", x = 0, y = 0, label = "No data available for selection"))
+    }
+    
+    # Determine the x-axis variable for plotting within a year
+    # Using the full date 'day' column as the x-axis
+    x_var = "day"
+    x_label = "Date"
+    
+    # Create the plot based on selected graph type
+    if (input$graph_type == "line") {
+      ggplot(data_to_plot, aes_string(x = x_var, y = "count", group = 1)) + # Use aes_string with variable names
+        geom_line() +
+        geom_point() + # Add points to the line plot
+        labs(title = paste("Rider Count For Year", input$selected_year,"In", toupper(input$rush_period), "Rush Hour"),
+             x = x_label,
+             y = "Total Riders") +
+        theme_minimal() +
+        scale_x_date(date_breaks = "1 month", date_labels = "%b %d") # Format x-axis for dates
+    } else { # Bar plot
+      ggplot(data_to_plot, aes_string(x = x_var, y = "count")) + # Use aes_string
+        geom_col() +
+        labs(title = paste("Rider Count For Year", input$selected_year,"In", toupper(input$rush_period), "Rush Hour"),
+             x = x_label,
+             y = "Total Riders") +
+        theme_minimal() +
+        scale_x_date(date_breaks = "1 month", date_labels = "%b %d") # Format x-axis for dates
+    }
+    
+  }) %>% bindEvent({ input$selected_year; input$rush_period; input$graph_type }) # Update plot when these inputs change
+  
+}
+
+# Run app
+shiny::shinyApp(ui = ui, server = server, onStart = global)
